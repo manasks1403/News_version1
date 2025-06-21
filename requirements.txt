@@ -1,0 +1,11 @@
+feedparser
+googlesearch-python
+playwright
+beautifulsoup4
+requests
+nest_asyncio
+transformers
+accelerate
+bitsandbytes
+pydub
+python-dotenv
