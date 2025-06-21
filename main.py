@@ -5,20 +5,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY") or os.getenv("ELEVENLABS_API_KEY")
 # =================================
 
 # =================================
 # Main Code - Do not modify below
 # =================================
 
+import newspaper
 import feedparser
-import asyncio
-import nest_asyncio
 from googlesearch import search
-from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
+from newspaper import Article
 import requests
 import json
 import re
@@ -26,8 +25,8 @@ import os
 from pathlib import Path
 import time
 import glob
+from io import BytesIO
 
-nest_asyncio.apply()
 
 class AudioOptimizedNewsAggregator:
     def __init__(self, groq_api_key=None):
@@ -82,70 +81,34 @@ class AudioOptimizedNewsAggregator:
         all_urls = list(set(rss_urls + google_urls))
         return all_urls[:max_results]
     
-    async def fetch_article_async(self, url):
-        """Fetch single article content using Playwright."""
+    def fetch_article_content(self, url):
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=['--no-sandbox', '--disable-dev-shm-usage']
-                )
-                page = await browser.new_page()
-                await page.goto(url, timeout=10000, wait_until="domcontentloaded")
-                await page.wait_for_timeout(2000)
-                html = await page.content()
-                await browser.close()
+            article = Article(url)
+            article.download()
+            article.parse()
             
-            soup = BeautifulSoup(html, "html.parser")
-            paragraphs = soup.find_all("p")
-            text = "\n".join(p.get_text().strip() for p in paragraphs if p.get_text().strip())
-            title = soup.title.string.strip() if soup.title else "Untitled"
-            
-            return {"title": title, "text": text.strip(), "url": url}
-        except Exception:
+            return {
+                "title": article.title or "Untitled",
+                "text": article.text.strip() if article.text else None,
+                "url": url
+            }
+        except Exception as e:
+            print(f"Failed to fetch {url}: {e}")
             return {"title": None, "text": None, "url": url}
     
-    async def fetch_all_articles(self, urls):
-        """Fetch all articles concurrently."""
+    def fetch_all_articles(self, urls):
+        """Fetch all articles synchronously."""
         print(f"🔄 Fetching content from {len(urls)} sources...")
-        tasks = [self.fetch_article_async(url) for url in urls]
-        results = await asyncio.gather(*tasks)
         
-        # Filter out failed fetches
-        valid_results = [r for r in results if r["text"] and r["title"]]
-        print(f"✅ Successfully fetched {len(valid_results)} articles")
-        return valid_results
-    
-    def get_user_preferences(self):
-        """Get user preferences for format and duration."""
-        print("🎯 Select the format for your news briefing:")
-        print("1. News format (Professional broadcast style)")
-        print("2. Podcast (Conversational discussion)")
-        print("3. Debate (Multiple perspectives)")
+        results = []
+        for url in urls:
+            result = self.fetch_article_content(url)
+            if result["text"]:
+                results.append(result)
+            time.sleep(1)  # Rate limiting
         
-        while True:
-            format_choice = input("Enter 1, 2, or 3: ").strip()
-            if format_choice in {"1", "2", "3"}:
-                break
-            print("❌ Invalid choice. Please enter 1, 2, or 3.")
-        
-        format_map = {"1": "news", "2": "podcast", "3": "debate"}
-        chosen_format = format_map[format_choice]
-        
-        while True:
-            time_input = input("⏱️ Duration in minutes (1, 3, 5, or 10): ").strip()
-            if time_input.isdigit() and int(time_input) in {1, 3, 5, 10}:
-                time_limit_minutes = int(time_input)
-                break
-            print("❌ Please enter 1, 3, 5, or 10.")
-        
-        word_limit = time_limit_minutes * 150  # ~150 words per minute
-        
-        return {
-            "format": chosen_format,
-            "duration_minutes": time_limit_minutes,
-            "word_limit": word_limit
-        }
+        print(f"✅ Successfully fetched {len(results)} articles")
+        return results
     
     def get_audio_optimized_prompts(self, topic, preferences):
         """Generate audio-optimized prompts for better TTS conversion."""
@@ -328,11 +291,8 @@ Generate the response now:"""
             print(f"❌ Could not save file: {e}")
             return None
     
-    async def generate_audio_ready_briefing(self, topic):
+    def generate_audio_ready_briefing(self, topic, preferences):
         """Main function to generate audio-ready news briefing."""
-        # Get user preferences
-        preferences = self.get_user_preferences()
-        
         # Fetch URLs
         print(f"🔍 Searching for '{topic}' articles...")
         urls = self.get_combined_urls(topic, max_results=15)
@@ -340,7 +300,7 @@ Generate the response now:"""
             return None, "No trusted news sources found for this topic."
         
         # Fetch articles
-        articles = await self.fetch_all_articles(urls)
+        articles = self.fetch_all_articles(urls)
         if not articles:
             return None, "Could not fetch content from any sources."
         
@@ -604,7 +564,7 @@ class ElevenLabsAudioGenerator:
             )
             
             if response.status_code == 200:
-                return response.content
+                return BytesIO(response.content)
             else:
                 print(f"❌ TTS Error {response.status_code}: {response.text}")
                 return None
@@ -659,89 +619,32 @@ class ElevenLabsAudioGenerator:
         
         try:
             from pydub import AudioSegment
-            from io import BytesIO
+            from pydub.effects import normalize
             
             combined = AudioSegment.empty()
             
             for audio_data in audio_segments:
-                audio = AudioSegment.from_mp3(BytesIO(audio_data))
+                audio = AudioSegment.from_mp3(audio_data)
                 combined += audio
                 combined += AudioSegment.silent(duration=500)  # 0.5 second pause
             
-            # Save final audio
-            output_file = f"{topic.replace(' ', '_')}_{format_type}_audio.mp3"
-            combined.export(output_file, format="mp3")
+            # Normalize audio
+            combined = normalize(combined)
             
-            print(f"✅ Complete audio saved as: {output_file}")
-            return output_file
+            # Create in-memory file
+            output = BytesIO()
+            combined.export(output, format="mp3")
+            output.seek(0)
+            
+            print("✅ Audio generation complete!")
+            return output
             
         except ImportError:
-            print("⚠️ pydub not available, saving individual segments")
-            for i, audio_data in enumerate(audio_segments, 1):
-                filename = f"{topic.replace(' ', '_')}_{format_type}_segment_{i}.mp3"
-                with open(filename, 'wb') as f:
-                    f.write(audio_data)
-                print(f"💾 Saved: {filename}")
-            return [f"{topic.replace(' ', '_')}_{format_type}_segment_{i}.mp3" for i in range(1, len(audio_segments) + 1)]
+            print("⚠️ pydub not available, returning first segment only")
+            if audio_segments:
+                return audio_segments[0]
+            return None
         
         except Exception as e:
             print(f"❌ Audio combination error: {e}")
             return None
-
-
-# Main execution
-async def main():
-    print("🎙️ Integrated Audio News Aggregator")
-    print("=" * 50)
-    
-    # Check API keys
-    if GROQ_API_KEY == "your_groq_api_key_here" or not GROQ_API_KEY:
-        print("❌ Please set your GROQ_API_KEY at the top of the script")
-        return
-    
-    if ELEVENLABS_API_KEY == "your_elevenlabs_api_key_here" or not ELEVENLABS_API_KEY:
-        print("❌ Please set your ELEVENLABS_API_KEY at the top of the script")
-        return
-    
-    # Initialize aggregator
-    aggregator = AudioOptimizedNewsAggregator(groq_api_key=GROQ_API_KEY)
-    
-    # Get topic from user
-    topic = input("📌 Enter a news topic: ")
-    
-    print(f"\n🔄 Processing '{topic}' for audio conversion...")
-    
-    # Generate script
-    result, error = await aggregator.generate_audio_ready_briefing(topic)
-    
-    if error:
-        print(f"❌ Error: {error}")
-        return
-    
-    print(f"\n✅ Successfully generated {result['preferences']['format']} script!")
-    print(f"📊 Sources used: {result['articles_count']}")
-    print(f"⏱️ Duration: {result['preferences']['duration_minutes']} minutes")
-    
-    # Initialize audio generator
-    audio_gen = ElevenLabsAudioGenerator(ELEVENLABS_API_KEY)
-    
-    # Generate audio directly from script
-    audio_result = audio_gen.generate_audio_from_script(
-        result['generated_script'], 
-        result['preferences']['format'], 
-        topic
-    )
-    
-    if audio_result:
-        print(f"\n🎵 Audio generation completed!")
-        if isinstance(audio_result, str) and audio_result.endswith('.mp3'):
-            print(f"🎧 Audio file: {audio_result}")
-        elif isinstance(audio_result, list):
-            print(f"🎧 Generated {len(audio_result)} audio segments")
-        
-        print("\n💡 Audio files are ready!")
-    else:
-        print("\n❌ Audio generation failed")
-
-if __name__ == "__main__":
-    asyncio.run(main())

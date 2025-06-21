@@ -4,4 +4,17 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "aiohttp>=3.12.13",
+    "beautifulsoup4==4.12.3",
+    "feedparser==6.0.10",
+    "ffmpeg-python==0.2.0",
+    "googlesearch-python==1.2.3",
+    "lxml[html-clean]>=4.9.3",
+    "nest-asyncio>=1.5.6",
+    "newspaper3k==0.2.8",
+    "pydub==0.25.1",
+    "python-dotenv==1.0.1",
+    "requests==2.31.0",
+    "streamlit==1.32.0",
+]

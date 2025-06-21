@@ -1,21 +1,45 @@
 import streamlit as st
-import asyncio
-import nest_asyncio
 from main import AudioOptimizedNewsAggregator, ElevenLabsAudioGenerator
+from io import BytesIO
+import time
 import os
-import io
-import tempfile
 
-# Apply nest_asyncio to handle asyncio in Streamlit
-nest_asyncio.apply()
-
+# Set page config
 st.set_page_config(
     page_title="Audio News Aggregator", 
     layout="centered",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
-st.title("🎙️ Integrated Audio News Aggregator")
+# Custom CSS
+st.markdown("""
+<style>
+    .stProgress > div > div > div > div {
+        background-color: #4CAF50;
+    }
+    .stTextInput input {
+        font-size: 18px !important;
+    }
+    .stSelectbox select {
+        font-size: 16px !important;
+    }
+    .stButton button {
+        background-color: #4CAF50;
+        color: white;
+        font-weight: bold;
+        padding: 10px 24px;
+        border-radius: 5px;
+        border: none;
+    }
+    .stButton button:hover {
+        background-color: #45a049;
+    }
+    .stDownloadButton button {
+        background-color: #2196F3 !important;
+        color: white !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # Initialize session state
 if 'result' not in st.session_state:
@@ -23,13 +47,18 @@ if 'result' not in st.session_state:
 if 'processing' not in st.session_state:
     st.session_state.processing = False
 
-# API Keys from Streamlit secrets
-try:
-    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-    ELEVENLABS_API_KEY = st.secrets["ELEVENLABS_API_KEY"]
-except KeyError:
-    st.error("❌ API keys not found in Streamlit secrets. Please add GROQ_API_KEY and ELEVENLABS_API_KEY to your secrets.")
+# Get API keys from environment variables
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+
+# Check if API keys are available
+if not GROQ_API_KEY or not ELEVENLABS_API_KEY:
+    st.error("❌ API keys not found. Please set GROQ_API_KEY and ELEVENLABS_API_KEY environment variables.")
     st.stop()
+
+# Main app
+st.title("🎙️ Integrated Audio News Aggregator")
+st.markdown("---")
 
 # Input form
 with st.form("news_form"):
@@ -44,6 +73,7 @@ with st.form("news_form"):
         format_choice = st.selectbox(
             "🎯 Select Format", 
             ["News", "Podcast", "Debate"],
+            index=0,
             help="Choose the style of your audio briefing"
         )
     
@@ -57,7 +87,7 @@ with st.form("news_form"):
     
     submit = st.form_submit_button("🚀 Generate Audio Briefing", use_container_width=True)
 
-# Convert format choice to match main.py expectations
+# Convert format choice
 format_map = {"News": "news", "Podcast": "podcast", "Debate": "debate"}
 
 if submit and topic:
@@ -71,12 +101,12 @@ if submit and topic:
         "word_limit": duration * 150
     }
     
-    # Progress tracking
+    # Initialize progress
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     try:
-        # Initialize classes
+        # Initialize components
         status_text.text("🔧 Initializing components...")
         progress_bar.progress(10)
         
@@ -93,21 +123,16 @@ if submit and topic:
             st.session_state.processing = False
             st.stop()
         
-        st.success(f"✅ Found {len(urls)} relevant sources")
-        
         # Fetch articles
         status_text.text("📄 Fetching article content...")
         progress_bar.progress(40)
         
-        # Run the async function
-        articles = asyncio.run(aggregator.fetch_all_articles(urls))
+        articles = aggregator.fetch_all_articles(urls)
         
         if not articles:
             st.error("❌ Could not fetch content from any sources. Please try again later.")
             st.session_state.processing = False
             st.stop()
-        
-        st.success(f"✅ Successfully processed {len(articles)} articles")
         
         # Generate script
         status_text.text("🤖 Generating audio-optimized script...")
@@ -122,32 +147,24 @@ if submit and topic:
             st.session_state.processing = False
             st.stop()
         
-        # Save script to temporary file
-        script_filename = f"{topic.replace(' ', '_')}_{preferences['format']}_script.txt"
-        
         # Generate audio
         status_text.text("🎙️ Converting script to audio...")
         progress_bar.progress(80)
         
-        audio_result = audio_gen.generate_audio_from_script(
-            script, 
-            preferences['format'], 
-            topic
-        )
+        audio_result = audio_gen.generate_audio_from_script(script, preferences['format'], topic)
         
         progress_bar.progress(100)
         status_text.text("✅ Complete!")
         
-        # Store results in session state
+        # Store results
         st.session_state.result = {
             "script": script,
-            "script_filename": script_filename,
             "audio_result": audio_result,
             "topic": topic,
             "format": format_choice,
             "duration": duration,
             "articles_count": len(articles),
-            "sources": [article.get('url', 'Unknown') for article in articles[:5]]  # Show first 5 sources
+            "sources": [article.get('url', 'Unknown') for article in articles[:5]]
         }
         
     except Exception as e:
@@ -159,6 +176,7 @@ if st.session_state.result:
     result = st.session_state.result
     
     st.success("🎉 Audio briefing generated successfully!")
+    st.balloons()
     
     # Metrics
     col1, col2, col3 = st.columns(3)
@@ -175,61 +193,34 @@ if st.session_state.result:
             "Script Content", 
             result["script"], 
             height=300,
-            help="This is the generated script that was converted to audio"
+            help="This is the generated script that was converted to audio",
+            label_visibility="collapsed"
         )
         
         # Download script button
         st.download_button(
             label="📥 Download Script",
             data=result["script"],
-            file_name=result["script_filename"],
+            file_name=f"{result['topic'].replace(' ', '_')}_{result['format']}_script.txt",
             mime="text/plain"
         )
     
     # Audio section
     st.subheader("🎧 Generated Audio")
     
-    if isinstance(result["audio_result"], str) and result["audio_result"].endswith(".mp3"):
-        # Single audio file
-        try:
-            with open(result["audio_result"], "rb") as audio_file:
-                audio_bytes = audio_file.read()
-                st.audio(audio_bytes, format="audio/mp3")
-                
-                # Download button for audio
-                st.download_button(
-                    label="📥 Download Audio",
-                    data=audio_bytes,
-                    file_name=result["audio_result"],
-                    mime="audio/mp3"
-                )
-        except FileNotFoundError:
-            st.error("❌ Audio file not found")
-    
-    elif isinstance(result["audio_result"], list):
-        # Multiple audio segments
-        st.info(f"Generated {len(result['audio_result'])} audio segments:")
+    if result["audio_result"]:
+        audio_bytes = result["audio_result"].read()
+        st.audio(audio_bytes, format="audio/mp3")
         
-        for i, audio_file in enumerate(result["audio_result"], 1):
-            st.write(f"**Segment {i}:**")
-            try:
-                with open(audio_file, "rb") as f:
-                    audio_bytes = f.read()
-                    st.audio(audio_bytes, format="audio/mp3")
-                    
-                    # Download button for each segment
-                    st.download_button(
-                        label=f"📥 Download Segment {i}",
-                        data=audio_bytes,
-                        file_name=audio_file,
-                        mime="audio/mp3",
-                        key=f"download_segment_{i}"
-                    )
-            except FileNotFoundError:
-                st.error(f"❌ Audio segment {i} not found")
-    
+        # Download button for audio
+        st.download_button(
+            label="📥 Download Audio",
+            data=audio_bytes,
+            file_name=f"{result['topic'].replace(' ', '_')}_{result['format']}_audio.mp3",
+            mime="audio/mp3"
+        )
     else:
-        st.warning("⚠️ Audio generation completed but files may not be accessible")
+        st.error("❌ Audio generation failed")
     
     # Sources used
     with st.expander("📰 News Sources Used"):
@@ -242,33 +233,33 @@ if st.session_state.result:
         st.session_state.processing = False
         st.rerun()
 
-# Instructions
+# Sidebar with instructions
 with st.sidebar:
     st.header("📋 How to Use")
-    st.write("""
-    1. **Enter Topic**: Type any news topic you're interested in
+    st.markdown("""
+    1. **Enter Topic**: Type any news topic
     2. **Choose Format**: 
-       - **News**: Professional broadcast style
-       - **Podcast**: Conversational discussion
+       - **News**: Professional broadcast
+       - **Podcast**: Conversational
        - **Debate**: Multiple perspectives
     3. **Select Duration**: 1-10 minutes
-    4. **Generate**: Click the button and wait
-    5. **Listen & Download**: Play the audio and download files
+    4. **Generate**: Click the button
+    5. **Listen & Download**: Enjoy your briefing
     """)
     
     st.header("🔧 Features")
-    st.write("""
-    - Fetches from trusted Indian & international news sources
+    st.markdown("""
+    - Trusted news sources
     - AI-powered script generation
-    - Multi-voice audio synthesis
-    - Download scripts and audio files
+    - High-quality voice synthesis
+    - Multiple output formats
     """)
     
     st.header("⚡ Tips")
-    st.write("""
-    - Be specific with your topic (e.g., "India budget 2025" vs "budget")
-    - Longer durations provide more detailed coverage
-    - Podcast format works well for complex topics
+    st.markdown("""
+    - Be specific with topics
+    - Longer durations = more detail
+    - Podcast format for complex topics
     """)
 
 # Footer
