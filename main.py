@@ -86,7 +86,10 @@ class AudioOptimizedNewsAggregator:
         """Fetch single article content using Playwright."""
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-dev-shm-usage']
+                )
                 page = await browser.new_page()
                 await page.goto(url, timeout=10000, wait_until="domcontentloaded")
                 await page.wait_for_timeout(2000)
